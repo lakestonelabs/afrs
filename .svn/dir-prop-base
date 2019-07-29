@@ -1,9 +1,0 @@
-K 10
-svn:ignore
-V 37
-.buildpath
-.cache
-.project
-.settings
-
-END

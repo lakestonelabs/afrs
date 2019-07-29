@@ -1,8 +1,0 @@
-This file is a hint to help you to know where to start next time.
-
-*  Need to build the heirarchy for the transaction class so we know
-what we possible messages we can send/expect to a previous command.
-
-3/29/2011
-	*	Need to put some checks in place so that we can detect when the Message::buildTransmitMessage() is called before
-		the message is added to it's transaction Transaction::addMessage().
