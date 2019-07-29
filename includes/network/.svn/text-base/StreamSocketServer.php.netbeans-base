@@ -1,0 +1,363 @@
+<?php
+
+/*
+ * Usage
+ * 
+ * This class implements a generic socket-based server.  The server recieves data from the client.  It then
+ * simply appends the client socket and data to a 2-d array.  Then when it's done listening it returns the
+ * 2-d array.
+ * 
+ */
+
+
+
+/*
+ * Changes
+ *
+ * 3-20-2011  -     This class no longer uses the Message class.  Therefore when this class recieves data from the client, it
+ *				simply appends the client socket and data to a 2-d array.  Then when it's done listening it returns the
+ *				2-d array.  Earlier this class would create afrs Messages using the Message class.  I removed this to keep
+ *				this class more abstract so it could be used for other projects not related to afrs.
+ */
+
+Class StreamSocketServer
+{
+	protected	$server_socket,
+                        $client_socket,
+                        $socket_result,
+                        $connection_count = null,
+                        $max_connections = null,
+                        $input_buffer = null,
+                        $master = null, 
+                        $clients_info = array(),
+                        $read = null,
+                        $write,
+                        $mod_fd = null,
+                        $client_data_buffer = array(array()),  // 2d array that holds the client sockets and their data.
+                                                               // [1][0] => client 1's socket. ([0][0] is always the server socket.)
+                                                               // [1][1] => client 1's data.  The client data element is appended to 
+                                                               // itself until a full conversation has been completed.  Then the 
+                                                               // complete conversation is processed.
+                        $client_conn_manager = null;
+				
+	private		$sleep_interval = 100000;  // How long the server waits in milliseconds between checking for new connections.
+										   // TODO  The sleep_interval should be stored and read from the db.
+	
+	// Returns type ConnectionManager
+	function __construct($address, $port, $max_connections)
+	{	
+		// create a stream socket
+		$this->server_socket = stream_socket_server("tcp://$address:$port", $errno, $errstr);
+		$this->max_connections = $max_connections;
+		$this->connection_count = 0;
+		
+		if ($this->server_socket != false)
+		{
+			$this->master[] = $this->server_socket;  // The server socket is always the first elemet in the 2d array.
+			$this->read = $this->master;
+		}
+		else if ($this->server_socket === false)
+		{
+			echo "Error in server socket: " . $errstr . ":" . $errno . "\n";
+			exit(1);
+		}
+	}
+
+	function  __destruct()
+	{
+		return (fclose($this->server_socket));
+	}
+	
+	function listen()
+	{
+        
+		// Some of the below code was used from various users on the php doco website for the stream_socket_server page.
+		$this->read = $this->master;
+		
+		// Before you pull you hair out trying to understand stream_select, read the socket_select.  
+		// Pay close attention that both socket and stream select functions will modify the contents 
+		// of the array on exit.  This will explain how $this->read[0] isn't always the server socket.
+		$this->mod_fd = stream_select($this->read, $_w = NULL, $_e = NULL, 0, $this->sleep_interval);  // Block for input.
+
+		if ($this->mod_fd === false) 
+		{
+			echo "Could not read stream arrays.  Exiting listening loop.\n";
+			return(false);
+		}
+        
+                // Loop through and take care of the open streams.
+                foreach ($this->read as $this_read_socket)
+                {
+                    if ($this_read_socket === $this->server_socket)
+                    {
+                         $this->client_socket = stream_socket_accept($this->server_socket) or die("Could not set up socket listener\n");
+                         // Below is the "master" server section.
+                         if ($this->connection_count < $this->max_connections)
+                         {
+                                // Greet the client.
+                                // TODO:  IMPORTANT!!!! When we write to the client, it screws up the message processing.  Need to fix this by only processing
+                                //        the actuall xml data and not the greeting.
+                                 //fwrite($this->client_socket, "AFRS ver. 0.1alpha (Advanced File Replication Service)\n");
+                                 $this->registerClient($this->client_socket);  // Register the new client so we can start passing data between client & server.
+                         }
+                         else
+                         {
+                                // Tell the client to go away.
+                                fwrite($this->client_socket, "AFRS ver. 0.1alpha (Advanced File Replication Service)\nNo more connections accepted at this time.\n");
+                                fclose($this->client_socket);
+                         }
+                      }
+                      else
+                      {
+                            // Below is the communication with the client after the master has connected to the client.
+                            // This section is for reading data from the client.
+                            $this->client_socket = $this_read_socket;
+                            $sock_data = null;
+                            $read_size = 0;
+
+                            $socket_info = stream_get_meta_data($this->client_socket);
+                            $unread_data_size = $socket_info["unread_bytes"];  // Dynamically get the size of client data 
+                            
+                            if ($unread_data_size >= 1024 || $unread_data_size === 0)
+                            {
+                                    $read_size = 1024;  // 1024 was chosen so it does not block too long waiting for data 
+                                                        // and therefore give better program interaction response time.
+                            }
+                            else
+                            {
+                                    $read_size = $unread_data_size;  // If we don't do this when the unread_bytes < 1024, then fread() 
+                                                                     // will block until it times-out or until it receives more data 
+                                                                     // until the buffer becomes 1024 again.  Therefore we need to 
+                                                                     // dynamically set it.
+                            }
+
+                            $sock_data = fread($this->client_socket, $read_size);
+                            if (strlen($sock_data) === 0) // Client connection closed.
+                            { 
+                                    if (!$this->unregisterClient($this->client_socket))  // First unregister the client from the AFRS server..
+                                    {
+                                            echo "ERROR trying to unregister client from the Connection Manager\n";
+                                    }
+                            }
+                            else if ($sock_data === false) 
+                            {
+                                    echo "Something bad happened while reading the client input.\n   Remote client may have gone away.\n   Terminating connection with remote end.\n";
+                                    $this->unregisterClient($this->client_socket);
+
+                            } 
+                            else
+                            {
+                                // Read data from each client.
+                                $key = array_search($this->client_socket, $this->master, true);  // Find the array position for the client.
+                                if ($this->client_data_buffer[$key][0] === $this->client_socket)  // Don't just match on name(text), match also on type (===),
+                                {
+                                    if (array_key_exists(1, $this->client_data_buffer[$key]))
+                                    {
+                                        $this->client_data_buffer[$key][1] .= $sock_data;  // Append the client data for that socket.
+                                    }
+                                    else
+                                    {
+                                        $this->client_data_buffer[$key][1] = $sock_data;
+                                    } 
+                                }
+                            }
+                        }
+                }
+                return(true);
+	}  // End of listen() method
+	
+	protected function registerClient($client_socket)
+	{
+     		$client_info = stream_socket_get_name($client_socket, true);
+     		echo "Client connection initiated from " . $client_info . "\n";
+     		$this->connection_count++;
+     		$this->master[] = $client_socket;
+                $this->client_data_buffer[][0] = $client_socket;  // Append the client socket to the rest of the client data array.
+                return(true);
+	}
+	
+	protected function unregisterClient($client_socket)  //  Accepts type socket.  Returns type bool.
+	{
+		//echo "Unregistering client: " . $client_socket . "\n";
+		$key_to_del = array_search($client_socket, $this->master, true);  // Find the array position for the client.
+		$client_info = stream_socket_get_name($client_socket, true);
+		fclose($this->master[$key_to_del]);  // Must do this on the array not just the socket since the array is what a record keeper for all connections.
+		unset($this->master[$key_to_del]);  // Must do this on the array not just the socket since the array is what a record keeper for all connections.
+		unset($this->client_data_buffer[$key_to_del][0]);  // Unset the socket info.
+		unset($this->client_data_buffer[$key_to_del][1]);  // Unset the data for that socket.
+		$this->connection_count--;
+		echo "Client connection from " . $client_info . " closed.\n" . "----------------------------------------------------\n";
+		return(true);
+	}
+	
+	function getClientData()  // Returns an array of Message objects.
+	{
+		$clients_messages = null;  // 2D array that holds an array of client sockets and their messages to be returned.
+		$count = 0;
+		foreach($this->client_data_buffer as $this_client_data)
+		{
+			if (array_key_exists(1, $this_client_data))  //  Only proceed if there is data to process.  The data is stored in array index "1";
+			{
+				if (preg_match('/\n\n/', $this_client_data[1]))  // Determine if a complete client message has been read. Denoted by a double return.
+				{
+					echo "Received two line returns!\n";
+					// All messages are handled for a client before proceeding to the next client.
+					$end = strrpos($this_client_data[1], "\n\n");  // Find the last occurance of a double-line return.  "a" in "abcde" is 0.
+					$sub_string = substr($this_client_data[1], 0, $end);  // Get everything up to the last occurance of a line return.
+					$sub_messages = preg_split('/\n\n/', $sub_string);  // Many messages can be in one client data string.  This is usually true for afrs-watcher events.
+					foreach ($sub_messages as $this_sub_message)  // Many messages can be in one client data string.  This is usually true for afrs-watcher events.
+					{
+						if (strlen($this_sub_message) > 0)  // Don't create new message objects for the last element in $sub_messages which is always \n\
+						{
+							try
+							{
+								echo "//////////////  Received this message from remote //////////////\n" . trim($this_sub_message, "\n") . "///////////////////////////////\n";
+								$clients_messages[$count][0] = $this_client_data[0];
+								$clients_messages[$count][1] = trim($this_sub_message, "\n");  // Make sure to trim any line returns from the message.
+								echo "New message received on: " . time() . "\n";
+							}
+							catch (Exception $e)
+							{
+								// Send exception error message to client.
+								echo $e . "\n";
+								return (false);
+							}
+						}
+					}
+					$key = array_search($this_client_data[0], $this->master, true);  // Find the position for a certain socket in the master array.
+					if (($end + 2) < strlen($this_client_data[1]))  // We have some leftover data from a previously unfinished conversation.
+					{
+						$leftovers = substr($this_client_data[1], ($end + 2));  // +2 is so we don't reprocess the \n\n from the prior message.
+						$this->client_data_buffer[$key][1] = $leftovers;  // Get the leftovers and store so
+																		  // the rest of the conversatioin can be completed
+																		  // at the next pass of getting remote client data.
+					}
+					else
+					{
+						$this->client_data_buffer[$key][1] = null;  // Zero out the client data buffer since the current data transaction has completed.
+					}
+																// We can use the same key index for both the master and client_data_buffer since
+																// we modify both master and client_data_buffer when any operation has occured and therefore
+																// their indexes stay the same between both.
+				}
+			}
+			$count++;
+		}
+		return $clients_messages;
+	}
+	
+	function sendToClient($socket, $message)  // Expects a client socket and raw data to be sent to client.
+	{
+		if ($socket != null && $message != null)
+		{
+			$message = $message . "\n\n"; // Make sure to append two line returns so the remote end knows this is a complete conversation.
+
+			if (is_resource($socket))
+			{
+				echo "//////////////  Sending this message to remote //////////////\n" . $message . "///////////////////////////////\n";
+				if(fwrite($socket, $message) != false)
+				{
+					return true;
+				}
+				else
+				{
+					return false;
+				}
+
+			}
+			else  // Create an actual socket from the ip:port info passed as the socket.
+			{
+				// TODO:  Need to do some regex. stuff to determine if the ip:port is in a correct format.
+				// TODO:  Need to find a way to create sockets to remote ends and not have to block for the
+				//        timeout period specified in the below parameter (2 seconds) for creating a socket.
+
+				// Before we create a new socket connection to a client, see if a socket connection to that client
+				// already exists.  If so use it instead of creating a new one.
+				$remote_socket = null;
+				if (sizeof($this->client_data_buffer) > 1)  // We can't reuse current client connections if no clients are connected.
+				{
+					$remote_client_ip_address = explode(":", $socket);  // Get the address part of the text-based socket.
+					$remote_client_ip_address = $remote_client_ip_address[0];
+					for ($i = 1; $i < sizeof($this->client_data_buffer); $i++)
+					{
+						// TODO:  Will need to also account for if the name returned by get_name function is
+						//        in-fact a FQDN instead of just trying to match on an IP.
+						$remote_client_name = stream_socket_get_name($this->client_data_buffer[$i][0], true);
+						if (preg_match('/'.$remote_client_ip_address.'/', $remote_client_name) > 0)
+						{
+							$remote_socket = $this->client_data_buffer[$i][0];
+						}
+
+					}
+				}
+				if ($remote_socket != null)  // We found an existing socket to the remote client to use.
+				{
+					echo "---Reusing existing socket connection to client---\n";
+					echo "//////////////  Sending this message to remote //////////////\n" . $message . "///////////////////////////////\n";
+					if (fwrite($remote_socket, $message))
+					{
+						return true;
+					}
+					else
+					{
+						return false;
+					}
+				}
+				else // No existing socket connection to client exists.  Create a new one.
+				{
+					$client_socket = stream_socket_client("tcp://".$socket, $errno, $errstr, 2);
+					if(is_resource($client_socket)) // We only wait 5 seconds for the remote side to resond.
+					{
+						echo "---Creating new socket connection to " . $socket . "----\n";
+						echo "//////////////  Sending this message to remote //////////////\n" . $message . "///////////////////////////////\n";
+						if (fwrite($client_socket, $message)) // Send the message to the remote end.
+						{
+							$this->master[] = $client_socket;  // Add the new connection to the master connections array.
+							$this->client_data_buffer[][0] = $client_socket;  // Append the client socket to the rest of the client data array.
+							return true;
+						}
+						else
+						{
+							return false;
+						}
+
+					}
+					else
+					{
+						return false;
+					}
+				}
+			}
+		}
+		else
+		{
+			echo "StreamSocketServer::sendToClient : socket or message variable is null.  Invalid call.  Please correct.\n";
+		}
+	}
+	
+	function getConnectionCount()
+	{
+		return($this->connection_count);
+	}
+	
+	function setConnectionLimit($limit)
+	{
+		$this->max_connections = $limit;
+	}
+	
+	//  This will stop the entire socket server (client and server sockets).
+	function stop()
+	{
+		// run $this->unregisterClient() for each client connection and terminate the server socket.
+		foreach($this->master as $this_socket)
+		{
+			$this->unregisterClient($this_socket);
+		}
+
+		/*if ($this->__destruct())
+		{
+			echo "Server stopped.\n";
+		}*/
+	}
+}
+?>

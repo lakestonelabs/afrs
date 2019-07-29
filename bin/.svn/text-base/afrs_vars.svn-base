@@ -1,0 +1,10 @@
+$last_sanity_check = 0
+$membership_password = afrs_password
+$daemon_port_number = 4747
+$watcher_port_number = 4746
+$sid = 387d97a93c00b846e87ff
+$ip_address = 192.168.50.126
+$timezone = -7
+$afrs_version = 0.1
+$session_expires = 60
+$checkin_interval = 15

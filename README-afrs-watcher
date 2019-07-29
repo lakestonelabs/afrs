@@ -1,0 +1,26 @@
+AFRS-Watcher is a php script that will monitor locations on a linux filesystem specified by the user and will report the changes.  In many ways it's similar to iwatch but with many enhancements. AFRS-Watcher is also at the heart to the AFRS Daemon (still in developement).  The Daemon will be able to sync files (via rsync) in near-realtime to other servers running the AFRS-Daemon.  See the Sourceforge.net project homepage for more details.
+
+AFRS-Watcher is licensed under the GPLv3 and is copyrighted by Mike Lee 2008-2009.
+
+REQUIREMENTS:
+
+*  php 5 or greater
+*  php-inotify
+
+
+USAGE:
+  Below are some some examples of how to use afrs-watcher
+
+1.) ./afrs-watcher.php -o stdout /home/mike
+	The above command watches the /home/mike directory for any files/directories that have been created, deleted, modified or moved and prints the output to the screen.
+
+2.) ./afrs-watcher.php -o stdout -r /home/mike
+	Recursively watch all files and directories under the /home/mike filder for changes.
+
+3.) ./afrs-watcher.php -o stdout -r -h -e "~ .mp3" -y -c "echo '%f was changed on %t and its size is now %s' | mail -s 'File changed' someone@nowhere.com" /home/mike
+	The above command will watch /home/mike recursively(-r) for changes and will output them to the screen(-o stdout), will not report on hidden files(-h), will exclude any files that have ~ or .mp3 in their name, will not report mulitple times on files that have quick successive changes within the same amount of time(-y) and will send the person at someone@nowhere.com an email  with the %f, %t and %s replaced with the files name, time of event, and the size of the file.
+
+4.) ./afrs-watcher.php -o /tmp/filechanges.txt -r /home/mike
+	The above command will monitor /home/mike recursevily and will write the changes to the /tmp/filechanges.txt file.
+
+	Type ./afrs-watcher.php --help for more information on how to use the script.

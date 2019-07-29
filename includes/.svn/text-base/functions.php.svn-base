@@ -1,0 +1,201 @@
+<?php
+require(__DIR__."/../conf/afrs_config.php");
+require_once(__DIR__."/database/DbConnectionWrapper.php");
+require_once(__DIR__."/database/QueryWrapper.php");
+
+// Returns an a 3-d associative array of network devices and their attributes.
+function get_inet_info()
+{
+    $inet_device_names = null;
+    $inet_devices_array = null;
+    
+    $inet_device_names = preg_split("/\n/", shell_exec("ifconfig -s | cut -d ' ' -f 1 | tail -n +2"));
+    unset($inet_device_names[(sizeof($inet_device_names) - 1)]);  // Get rid of the extra trailing backspace.
+    unset($inet_device_names[array_search("lo", $inet_device_names)]);  // Get rid of the loopback device "lo".
+    $inet_device_names = array_merge(array(), $inet_device_names);  // Fix the array indexes after we deleted some elements.
+    $inet_device_count = sizeof($inet_device_names);
+    if ($inet_device_count > 0)  // Make sure we have devices to work with.
+    {
+        for($i = 0; $i < $inet_device_count; $i++)
+        {
+            $inet_devices_array[$i]["name"] = $inet_device_names[$i];
+            $inet_devices_array[$i]["mac"] = trim(shell_exec("cat /sys/class/net/$inet_device_names[$i]/address"));
+            $inet_devices_array[$i]["ip_address"] = trim(shell_exec("ifconfig $inet_device_names[$i] | grep 'inet addr' | cut -d : -f 2 | cut -d ' ' -f 1"));
+            $inet_devices_array[$i]["broadcast"] = trim(shell_exec("ifconfig $inet_device_names[$i] | grep 'inet addr' | cut -d : -f 3 | cut -d ' ' -f 1"));
+            $inet_devices_array[$i]["mask"] = trim(shell_exec("ifconfig $inet_device_names[$i] | grep 'inet addr' | cut -d : -f 4 | cut -d ' ' -f 1"));
+            $inet_devices_array[$i]["link_detected"] = trim(shell_exec("cat /sys/class/net/$inet_device_names[$i]/carrier"));
+            $inet_devices_array[$i]["state"] = trim(shell_exec("cat /sys/class/net/$inet_device_names[$i]/operstate"));
+            $gateway_temp = preg_split("/[\s,]+/", trim(shell_exec("route -n | grep UG | grep $inet_device_names[$i]")));
+            if (sizeof($gateway_temp) > 1)
+            {
+                $inet_devices_array[$i]["gateway"] = $gateway_temp[1];
+            }
+            else
+            {
+                $inet_devices_array[$i]["gateway"] = null;
+            }
+
+            $inet_devices_array[$i]["nameserver"] = trim(shell_exec("cat /etc/resolv.conf | grep nameserver | cut -d ' ' -f 2"));
+
+            if (preg_match("/eth/", $inet_device_names[$i]) == 1)  // Test to see if we are dealing with an ethernet device.
+            {
+                $inet_devices_array[$i]["speed"] = trim(shell_exec("cat /sys/class/net/$inet_device_names[$i]/speed"));
+                $inet_devices_array[$i]["duplex"] = trim(shell_exec("cat /sys/class/net/$inet_device_names[$i]/duplex"));
+            }
+            elseif (preg_match("/wlan/", $inet_device_names[$i]) == 1)  // Determine if we are dealing with a wireless device.  
+            {
+                $speed_temp = preg_split("/[\s,]+/", trim(shell_exec("iwlist $inet_device_names[$i] bitrate | grep 'Current Bit Rate' | cut -d : -f 2")));
+                $inet_devices_array[$i]["speed"] = $speed_temp[0];
+                $inet_devices_array[$i]["duplex"] = "half";
+            }
+            else
+            {
+                $inet_devices_array[$i]["speed"] = "unknown";
+                $inet_devices_array[$i]["duplex"] = "unknown";
+            }
+        }
+    }
+    else
+    {
+        return false;
+    }
+    return $inet_devices_array;
+}
+
+function get_inet_info_for_device($device_name)  // Accepts a string of the network interface and returns an associative array of it's attributes.
+{
+    $inet_devices_array = null;
+    $inet_devices_array = get_inet_info();
+    if ($inet_devices_array != false)
+    {
+        for($i = 0; $i < sizeof($inet_devices_array); $i++)
+        {
+            if ($inet_devices_array[$i]["name"] == $device_name)
+            {
+                return $inet_devices_array[$i];
+            }
+        }
+    }
+    else
+    {
+        return false; // Could not find any network devices on this system.
+    }
+}
+
+function get_inet_macs()  // Returns a 2-d array of device names and their mac addresses.  The names are the array keys.
+{
+    $inet_macs_array = null;
+    $inet_info_array = get_inet_info();
+    
+    for($i = 0; $i < sizeof($inet_info_array); $i++)
+    {
+        $inet_macs_array[$inet_info_array[$i]["name"]] = $inet_info_array[$i]["mac"];
+    }
+    return $inet_macs_array;
+}
+
+function get_ip_addresses()
+{
+	
+	$device_elements_array = array();
+	$device_collumns = null;  // Stores the number of collums.
+	$device_count = null;
+	$device_names = array();
+	$route_entries_count = null;
+	$device_array = array(); // Actually holds the computed information for the various network devices.
+	
+	$output = shell_exec("/sbin/route");
+	$route_array = preg_split("/\n/", $output);  // Split the output into an array delimited by newlines.
+	
+	foreach($route_array as $route_line)  // Find the dev names and store them in the 2d array.
+	{
+		echo "ROUTE LINE: " . $route_line . "\n";
+		$device_elements = preg_split("/ +/", $route_line);
+		$device_elements_array[] = $device_elements;
+	}
+	array_pop($device_elements_array); // Get rid of the trailing last new line.
+	$device_elements_array = array_reverse($device_elements_array);
+	array_pop($device_elements_array); //Get rid of the description.
+	array_pop($device_elements_array); // Get rid of the headers.
+	$device_elements_array = array_reverse($device_elements_array); // Put the array back in order.
+	
+	$device_collumns = sizeof($device_elements_array[0]);
+	$route_entries_count = sizeof($device_elements_array);
+	
+	// Get the device names.
+	for($i = 0; $i < $route_entries_count; $i++)
+	{
+		if (!in_array($device_elements_array[$i][$device_collumns-1], $device_names))
+		{
+			$device_names[] = $device_elements_array[$i][$device_collumns-1];
+		}
+	}
+	
+	print_r($device_elements_array);
+	echo "Collumn count is: " . $device_collumns . "\n";
+	print_r($device_names);
+	//echo $output;
+}
+
+function get_ip_address_db()
+{
+	$db_conn = new DbConnectionWrapper($dbtype, $dbhost, $dbname, $dbuser, $dbpassword);  // TODO  Need to figure out why I can't use the vars from the config include.
+	$query = new QueryWrapper($this->db_conn);
+	$query->runQuery("select value from tbl_inet_devices where status = 1");
+	$result = $query->getResultAssoc();
+	return $result["ip"];
+}
+
+// Returns the public IP address for this server.
+function get_public_ip_address()
+{
+    $public_ip_address = trim(shell_exec("wget -q -O - checkip.dyndns.org|sed -e 's/.*Current IP Address: //' -e 's/<.*$//'"));
+    return $public_ip_address;
+}
+
+function createRandomPassword($length) 
+{
+    $chars = "abcdef023456789";
+    srand((double)microtime()*1000000);
+    $i = 0;
+    $pass = '' ;
+
+    while ($i < $length) 
+    {
+        $num = rand() % 33;
+        $tmp = substr($chars, $num, 1);
+        $pass = $pass . $tmp;
+        $i++;
+    }
+    return $pass;
+}
+
+function getSID()  // Gets the SID for this server.  The SID is used as the client_id in to remote partners.
+{
+	$db_conn = new DbConnectionWrapper("mysql", "localhost", "afrs", "afrs", "afrspassword");  // TODO  Need to figure out why I can't use the vars from the config include.
+	$query = new QueryWrapper($db_conn);
+	
+	if ($query->runQuery("select value from tbl_registry where name = 'sid'"))
+	{
+		if ($query->getResultSize() > 0)
+		{
+			$result = $query->getResultAssoc();
+			return $result["value"];
+		}
+		else
+		{
+			return (false);
+		}
+	}
+	else
+	{
+		return (false);
+	}
+	
+}
+
+function createhash()
+{
+	return(hash('md5', microtime()));
+}
+?>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<afrsmessage>
+	<clientid>387d97a93c00b846e87ff</clientid>
+	<transactionid>7156e615d975a84637b</transactionid>
+	<sequencenumber>1</sequencenumber>
+	<timestamp>1263158725</timestamp>
+	<command>
+		<cmdname>PRESENTSHARES</cmdname>
+		<arguments>
+			<argument>
+				<argname>MEMBERSHIPPASSWORD</argname>
+				<argvalue>afrs_password</argvalue>
+			</argument>
+			<argument>
+				<argname>SHARECOUNT</argname>
+				<argvalue>2</argvalue>
+			</argument>
+		</arguments>
+	</command>
+	<shares>
+		<share>
+			<sharename>mikes_home</sharename>
+			<size>2000000</size>
+			<availablestorage>2000000</availablestorage>
+			<active>1</active>
+			<permissions>read</permissions>
+			<creationdate>2009-12-15 22:10:52</creationdate>
+		</share>
+		<share>
+			<sharename>root_home</sharename>
+			<size>45000000</size>
+			<availablestorage>45000000</availablestorage>
+			<active>1</active>
+			<permissions>read</permissions>
+			<creationdate>2010-01-10 11:41:48</creationdate>
+		</share>
+	</shares>
+	<reply>
+		<tocommand>GETSHARES</tocommand>
+		<errorcode></errorcode>
+		<notes></notes>
+	</reply>
+</afrsmessage>

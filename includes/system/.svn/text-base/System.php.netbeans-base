@@ -1,0 +1,76 @@
+<?php
+
+require_once(__DIR__."/../database/DbConnectionWrapper.php");
+require_once(__DIR__."/../database/QueryWrapper.php");
+
+Class System
+{
+	private	$dbconn = null, 
+			$query = null;
+			
+	function __construct()
+	{
+		require("conf/afrs_config.php");  // Variables are out of scope if outside a function and outside a class declaration in Classes.
+		// Create a db connection since we will be querying the db a lot.
+		$this->dbconn = new DbConnectionWrapper($dbtype, $dbhost, $dbname, $dbuser, $dbpassword);
+		$this->query = new QueryWrapper($this->dbconn);
+	}
+	
+	// Returns true if all network interfaces are up, false if any are down and displays those downed interfaces.
+	function checkNetwork()
+	{
+		// First get a list of all network interfaces.
+		$this->query->runQuery("select * from tbl_inet_devices");
+		
+		if ($this->query->getResultSize() > 0)
+		{
+			echo "Precheck:(System): All defined network devices found.  Good!\n";
+		}
+		else
+		{
+			echo "ERROR: No inet devices defined.  Please run afrs-config\n";
+			exit(1);
+		}
+	}
+	
+	function checkHardDrives()
+	{
+		echo "Checking hard drives...\n";
+		$scsi_count = exec("cat /proc/scsi/scsi | grep -c Host:");
+		//$ata_count = exec("cat /proc/hdd/hdd | grep -c Host:");
+		echo "   Found " . $scsi_count . " SCSI devices.\n";
+		echo "   Found " . $ata_count . " ATA/SATA devices.\n";
+		
+		
+		// location of UUID for drives is: ls -al /dev/disk/by-uuid/
+		$fstab_location = "/etc/fstab";
+		
+		// Get the list of supported filesystems by this host.
+		$kernel_version = exec("uname -r");
+		$fs_list_path = "/lib/modules/" . $kernel_version . "/kernel/fs";
+		$files_and_dirs = array_diff(scandir($fs_list_path), array('.', '..'));
+		$num_supported_fs = sizeof($files_and_dirs);
+		$mount_output = `mount`;
+		
+		echo "   This system supports " . $num_supported_fs . " filesystems\n";
+		
+		$this->query->runQuery("select * from tbl_filesystems where is_supported = 1");
+		$supported_array = $this->query->getResultsArray();
+		//var_dump($supported_array);
+		foreach($supported_array as $this_supported_fs)
+		{
+			echo "   Checking for " . $this_supported_fs["fs_type"] . " support....";
+			if (in_array($this_supported_fs["fs_type"], $files_and_dirs))
+			{
+				echo " OK\n";
+			}
+			else
+			{
+				echo " NO.  Please fix.\n";
+			}
+		}
+		
+		echo "Done.\n";
+	}
+}
+?>

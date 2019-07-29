@@ -1,0 +1,75 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of DispatchWatchEvent
+ *
+ * @author mlee
+ */
+
+require_once("Dispatcher.php");
+
+class DispatchWatchEvent extends Dispatcher
+{
+    public function __construct() 
+    {
+        parent::__construct();
+    }
+    
+    public function dispatch($transaction_obj)  // Dispatch method must return a Message object or false.
+    {
+        $parent_result = parent::dispatch($transaction_obj);
+        
+        if (is_object($parent_result) || $parent_result === null)  // If parent::dispatch() was able to help.
+        {
+            return $parent_result;
+        }
+        else if ($parent_result === false)  // Keep processing if parent::dispatch() was not able to help.
+        { 
+            if ($this->transaction_obj->hasNewMessages())
+            {
+                // Let's get to work.
+                $message_array = $this->transaction_obj->popNewMessage();
+                $this->message_obj = $message_array["message"];
+                $this->message_locality = $message_array["locality"];
+                
+                $watch_id = $this->message_obj->getArgumentValue("WATCHID");
+                $changed_files_array = $this->message_obj->getChangedFiles();
+                $result = false;
+                echo "There were " . sizeof($changed_files_array) . " in this watch event.\n";
+                foreach ($changed_files_array as $this_changed_file)
+                {
+                        $date = $this_changed_file["DATETIME"];
+                        $file = $this_changed_file["PATH"];
+                        $type = $this_changed_file["TYPE"];
+                        $event = $this_changed_file["ACTION"];
+                        $uid = $this_changed_file["UID"];
+                        $gid = $this_changed_file["GID"];
+                        $uid_name = $this_changed_file["USER"];
+                        $gid_name = $this_changed_file["GROUP"];
+                        $posix_permissions = $this_changed_file["POSIXPERMISSIONS"];
+                        $size = $this_changed_file["SIZE"];
+
+                        if ($this->dispatch_query->runQuery("insert into tbl_journal
+                                                            (watch_id, date, file, type, event, uid, uid_name, gid, gid_name, posix_permissions, size)
+                                                            values($watch_id, '$date', '$file', '$type', '$event', '$uid', '$uid_name', '$gid', '$gid_name', '$posix_permissions', '$size')"))
+                        {
+                                $result = true;
+                        }
+                        else
+                        {
+                                $result = false;
+                        }
+                }
+                return $result;
+            }       
+        }
+        
+    }
+}
+
+?>

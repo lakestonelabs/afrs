@@ -1,0 +1,258 @@
+#!/bin/bash
+
+#####################################################################
+#                                                                   #
+#  mdtcommit.sh                                                     #
+#  ============                                                     #
+#                                                                   #
+#  4/27/07      v.01   CAS                                          #
+#  Initial release                                                  #
+#                                                                   #
+#  12/12/08     v1.0   CAS                                          #
+#  In v1.0, the script is now parameterized, so that we can call    #
+#  it from other shell scripts and/or CGI processes.  It            #
+#  now accepts 3 parameters:                                        #
+#      -f <full path to file> (if no path $PWD is assumed)          #
+#      -c <comment>                                                 #
+#      -n <name of committer>                                       #
+#      -h for help                                                  #
+#                                                                   #
+#   ============================================================    #
+#                                                                   #
+#  This script is a wrapper for SVN that will commit configuration  #
+#  changes to a repository, and recopy the file with the SVN        #
+#  macros intact for change control purposes.                       #
+#                                                                   #
+#  The SVN user and password are stored in the script.  While a     #
+#  security no-no, the risk is fairly minimal as there is not a     #
+#  system user associated with the account.  Someone could grab     #
+#  the user/pass combination from the environment or the script     #
+#  itself and delete files from the repository, but the old         #
+#  revs would still exist in the repository.                        #
+#                                                                   #
+#  $Date: 2009-07-28 09:35:12 -0600 (Tue, 28 Jul 2009) $
+#  $Rev: 500 $
+#                                                                   #
+#####################################################################
+
+
+function printhelp {
+cat <<EOF
+Commits a file to the MDT Systems Configuration repository.  Filename and
+username are required fields.  Comment is optional.  If you do not specify
+ name on the comment line, you will be prompted for it.
+USAGE:
+
+  mdtcommit -f <filename>   
+	Commits <filename> to the host directory
+	in the repository.  The filename parameter
+	is the only one required.
+
+  mdtcommit -f <filename> -c <comment>
+	Commits the file with the comment specified
+	by the string after -c.  Comments should 
+	be enclosed in quotation marks.
+
+  mdtcommit -f <filename> -c <comment> -u <username>
+	Same as the option described above, but 
+	also allows you to specify the name of 
+	the committer.  If this parameter is not
+	specified, you will be prompted for it.
+
+  mdtcommit -h Displays this message.
+
+EOF
+}
+
+
+while getopts "u:hcf: $" OPTIONS; do
+	case $OPTIONS in
+		c)
+			CL_COMMENT=$OPTARG
+			COMMENT_ADD=1
+			;;
+		f)
+			COMMIT_FILE_FULL=$OPTARG                     # Name of the file to commit
+			;;
+		h)
+			printhelp
+			exit 0
+			;;
+		u)	
+			NAME=$OPTARG
+			;;
+		\?)	
+			echo -e $USAGE
+			exit 0
+			;;
+		*)	
+			echo -e $USAGE
+			exit 1
+			;;
+	esac
+done
+
+#####################################################################
+#                                                                   #
+#  Configuration Section                                            #
+#                                                                   #
+#####################################################################
+
+REPOS_TMPL=/tmp/repos-tmpl         	# Temporary directory for repository
+#SVN_USER=sysconfig                 	# Subversion username
+#SVN_PASS=SVNCommit                 	# Subversion password
+SVN_USER=                 	# Subversion username
+SVN_PASS=                 	# Subversion password
+CURRENT_DIR=$PWD                   	# Get the current directory to re-create
+                                   	# it in the temporary repository.
+COMMENT_ADD=0
+HOSTNAME=$(hostname -s)    		# Hostname
+SVN_REPOS=https://mdtisdtrac/repository/sysops-requests/$HOSTNAME
+				   	# To store files in host-specific
+                                   	# locations.
+MESSAGE_FILE=/tmp/`date +%s`.commit	#File to store commit comments
+USAGE="\nUsage:  $(basename $0) -f [file to be committed] -c [comment] -n [name of committer] -h \n"
+COMMIT_FILE=$(basename $COMMIT_FILE_FULL)
+
+if [ $# -eq 0 ]; then
+	echo -e $USAGE
+	exit 1
+fi
+
+if [ "$COMMIT_FILE_FULL" == "" ]; then
+	echo -e $USAGE
+	exit 1
+fi
+
+#####################################################################
+#                                                                   #
+#  Main Section                                                     #
+#                                                                   #
+#####################################################################
+
+PATHTEST=$(echo $COMMIT_FILE_FULL | fgrep -c /) 
+
+if [ $PATHTEST -ne 0 ]; then
+	FULL_PATH=$(echo $COMMIT_FILE_FULL | awk -F / '{for (i=2; i<NF; i++) printf "/"$i}')"/"	
+	REPOS_PATH=$FULL_PATH
+				   # Replicate directure structure
+				   # in temporary location
+	cd $FULL_PATH
+else
+	FULL_PATH=$PWD"/"        # File to commit, with path
+fi
+
+REPOS_DIR=$REPOS_TMPL/$HOSTNAME/$FULL_PATH
+REPOS_NEW_ROOT=$(echo $FULL_PATH | cut -d "/" -f 2)
+				   # The "root" directory for a subvserion
+				   # add operation (actually 2nd level).
+FULL_PATH=$FULL_PATH$COMMIT_FILE
+REPOS_PATH=$HOSTNAME$FULL_PATH     # Full path to file in tmp repository
+
+
+# Are we trying to commit a directory?
+#
+# In later versions, I may add this functionality to recurse into a
+# directory.
+
+if [ -d $FULL_PATH ]; then
+	echo "Cannot operate on a directory.  Please choose a single file."
+	exit 1
+fi
+
+# Does the temporary repository directory exist?  If not, create it.
+if [ ! -d $REPOS_TMPL ]; then
+	mkdir $REPOS_TMPL
+fi
+
+# Does the hostname directory exist in the repository?
+# If not, create it
+if [ ! -d $REPOS_TMPL/$HOSTNAME ]; then
+	mkdir -p $REPOS_TMPL/$HOSTNAME
+fi
+
+# Go to the host directory and check out the repository for this host
+cd $REPOS_TMPL/$HOSTNAME
+svn co --username $SVN_USER --password $SVN_PASS $SVN_REPOS .  >/dev/null 2>&1
+
+# Prompt for the name.  Note that this does not ensure that the name entered
+# here is the person who is actually doing the commit.  This shouldn't pose
+# too many problems in a small organization.
+
+if [ -z "$NAME" ]; then
+	read -p "Please enter your Name: " NAME
+
+	if [ $NAME = "" ]; then
+		echo "You must enter your name."
+		exit 1;
+	fi
+fi
+
+# Check to see if the user has asked to add more than the default comment,
+# then prompt for it.
+if [ -z "$CL_COMMENT" ] && [ $COMMENT_ADD -ne 0 ]; then
+	read -p "Comment: " COMMENT
+	if [ "$COMMENT" = "" ]; then
+		echo "No comment added."
+	fi
+else COMMENT=$CL_COMMENT
+fi
+
+# Just in case someone has commited something in the meantime.  Probably not
+# real crucial, but here nonetheless.
+cd $REPOS_TMPL/$HOSTNAME
+svn --username $SVN_USER --password $SVN_PASS update >/dev/null 2>&1
+
+# Check to see if the file already exists in the repository.  If not,
+# create the path to the file, and set a flag that we need to do
+# an svn add operation.
+if [ -f $REPOS_PATH ]; then
+	REPOS_ADD=0;
+else
+	REPOS_ADD=1;
+	mkdir -p $REPOS_DIR
+fi
+
+
+# Copy the file from its current location into the repository.
+cp -f $FULL_PATH $REPOS_DIR
+
+# If the add flag is on, go ahead and add it to the svn repository.
+# The --force option to svn makes it start at the specified directory
+# and add everything underneath it -- directories and files.
+if [ $REPOS_ADD -eq 1 ]; then
+	cd $REPOS_TMPL/$HOSTNAME
+	CMDLINE="svn add $REPOS_NEW_ROOT --force"
+	$CMDLINE  >/dev/null 2>&1
+fi
+
+# Default log entry for commit operation.
+COMMIT_MSG="$COMMIT_FILE on $HOSTNAME changed and committed by $NAME.  "
+echo $COMMIT_MSG > $MESSAGE_FILE
+
+# If we have a comment, append it to the default.
+if [ "$COMMENT" != "" ]; then
+	echo -e "\n$COMMENT" >> $MESSAGE_FILE
+fi
+
+# Change into the repository directory, and add the svn:keywords
+# property to the file.  Our assumption is that Date and Rev 
+# are in there somewhere.
+cd $REPOS_TMPL
+svn propset svn:keywords "Date Rev" $REPOS_PATH >/dev/null 2>&1
+
+# Set up the command line and commit the changes.
+CMDLINE='svn commit --username '$SVN_USER' --password '$SVN_PASS' --file '$MESSAGE_FILE
+cd $REPOS_TMPL/$HOSTNAME && $CMDLINE  >/dev/null 2>&1
+
+# Delete the file in question, then update, to make sure that our
+# file  gets updated with the svn:keywords macros substituted
+rm -f $REPOS_TMPL/$REPOS_PATH
+svn --username $SVN_USER --password $SVN_PASS update >/dev/null  2>&1
+
+# Copy the updated file back to the original location
+cp -f $REPOS_TMPL/$REPOS_PATH $FULL_PATH
+
+# Clean up after ourselves.
+rm -rf $REPOS_TMPL
+rm -f $MESSAGE_FILE
